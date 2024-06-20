@@ -171,7 +171,7 @@ func doReportTask(jobType JobType, id int, uuid int) {
 	response := ReportResponse{}
 	ok := call("Coordinator.Report", &request, &response)
 	if !ok {
-		panic("")
+		log.Printf("[worker] report task failed")
 	}
 }
 

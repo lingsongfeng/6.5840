@@ -133,8 +133,8 @@ func (c *Coordinator) Report(request *ReportRequest, response *ReportResponse) e
 	// commit task
 	filepath.Walk(".", func(path string, info os.FileInfo, err error) error {
 		if err != nil {
-			// return nil
-			panic(fmt.Sprintf("%v %v", err, path))
+			return nil
+			//panic(fmt.Sprintf("%v %v", err, path))
 		}
 		if strings.HasSuffix(path, uuid_s) {
 			newName := strings.TrimSuffix(path, filepath.Ext(path))
