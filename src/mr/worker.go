@@ -94,7 +94,7 @@ func doReduceTask(reducef func(string, []string) string, response HeartbeatRespo
 			continue
 		}
 		file, err := os.Open(fileName)
-		defer file.Close()
+		defer file.Close() // FIXME: defer in for loop
 		if err != nil {
 			fmt.Printf("[worker] open file failed: \"%s\"", fileName)
 			continue
@@ -112,7 +112,7 @@ func doReduceTask(reducef func(string, []string) string, response HeartbeatRespo
 	{
 		filename := OutFileName(response.Id)
 		ofile, err := os.Create(filename + fmt.Sprintf(".%d", uuid))
-		defer ofile.Close()
+		defer ofile.Close() // FIXME: defer not run at the end of the scope
 		if err != nil {
 			log.Printf("error open file %v\n", filename)
 			return
