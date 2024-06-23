@@ -19,7 +19,8 @@ package raft
 
 import (
 	//	"bytes"
-	"math/rand"
+
+	"log"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -27,7 +28,6 @@ import (
 	//	"6.5840/labgob"
 	"6.5840/labrpc"
 )
-
 
 // as each Raft peer becomes aware that successive log entries are
 // committed, the peer should send an ApplyMsg to the service (or
@@ -50,6 +50,14 @@ type ApplyMsg struct {
 	SnapshotIndex int
 }
 
+type ServerState int
+
+const (
+	Follower  ServerState = 0
+	Candidate ServerState = 1
+	Leader    ServerState = 2
+)
+
 // A Go object implementing a single Raft peer.
 type Raft struct {
 	mu        sync.Mutex          // Lock to protect shared access to this peer's state
@@ -61,17 +69,28 @@ type Raft struct {
 	// Your data here (3A, 3B, 3C).
 	// Look at the paper's Figure 2 for a description of what
 	// state a Raft server must maintain.
+	serverState ServerState
 
+	votesReceived int
+
+	currentTerm int
+	votedFor    int
+	log         []Entry
+	commitIndex int
+	lastApplied int
+	nextIndex   []int
+	matchIndex  []int
+
+	electionTimer  *time.Timer // follower->candidate 以及 candidate->candidate 状态转换的计时器
+	heartbeatTimer *time.Timer // 成为 Leader 后，定期向所有其他 peers 发送心跳请求
 }
 
 // return currentTerm and whether this server
 // believes it is the leader.
 func (rf *Raft) GetState() (int, bool) {
-
-	var term int
-	var isleader bool
-	// Your code here (3A).
-	return term, isleader
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	return rf.currentTerm, rf.serverState == Leader
 }
 
 // save Raft's persistent state to stable storage,
@@ -91,7 +110,6 @@ func (rf *Raft) persist() {
 	// raftstate := w.Bytes()
 	// rf.persister.Save(raftstate, nil)
 }
-
 
 // restore previously persisted state.
 func (rf *Raft) readPersist(data []byte) {
@@ -113,7 +131,6 @@ func (rf *Raft) readPersist(data []byte) {
 	// }
 }
 
-
 // the service says it has created a snapshot that has
 // all info up to and including index. this means the
 // service no longer needs the log through (and including)
@@ -123,22 +140,103 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 
 }
 
+// not thread-safe
+func (rf *Raft) becomeFollower(newTerm int) {
+	rf.currentTerm = newTerm
+	rf.serverState = Follower
+	rf.votedFor = -1
+	rf.votesReceived = 0
 
-// example RequestVote RPC arguments structure.
-// field names must start with capital letters!
-type RequestVoteArgs struct {
-	// Your data here (3A, 3B).
+	t := RandomizedElectionTime()
+	rf.electionTimer.Reset(t)
+	rf.heartbeatTimer.Stop()
+
+	//log.Printf("follower=%v term=%v %v\n", rf.me, rf.currentTerm, t)
 }
 
-// example RequestVote RPC reply structure.
-// field names must start with capital letters!
-type RequestVoteReply struct {
-	// Your data here (3A).
+// not thread-safe
+func (rf *Raft) becomeCandidate() {
+	rf.serverState = Candidate
+	rf.currentTerm++
+	rf.votedFor = rf.me
+	rf.votesReceived = 1 // vote for itself
+	for i := range rf.peers {
+		if i == rf.me {
+			continue
+		}
+		go func(term, voteFor, sendTo int) {
+			// request for votes
+			request := RequestVoteArgs{Term: term, CandidateId: voteFor, LastLogIndex: -1, LastLogTerm: -1}
+			reply := RequestVoteReply{}
+			if rf.sendRequestVote(sendTo, &request, &reply) {
+				rf.receiveVoteReply(&reply)
+			} else {
+				log.Printf("connection failed %v<->%v", voteFor, sendTo)
+			}
+		}(rf.currentTerm, rf.me, i)
+	}
+
+	t := RandomizedElectionTime()
+	rf.electionTimer.Reset(t)
+	rf.heartbeatTimer.Stop()
+
+	log.Printf("candidate=%v term=%v %v\n", rf.me, rf.currentTerm, t)
+}
+
+// not thread-safe
+func (rf *Raft) becomeLeader() {
+	rf.serverState = Leader
+
+	rf.heartbeatTimerExpiredImpl() // immediately notify all other peers
+
+	rf.heartbeatTimer.Reset(RandomizedHeartbeatTime())
+	rf.electionTimer.Stop()
+
+	log.Printf("leader=%v term=%v votes=%v\n", rf.me, rf.currentTerm, rf.votesReceived)
 }
 
 // example RequestVote RPC handler.
+// receive Request from other peers.
+// thread-safe
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
-	// Your code here (3A, 3B).
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+
+	if args.Term < rf.currentTerm {
+		reply.Term = rf.currentTerm
+		reply.VoteGranted = false
+		return
+	}
+
+	if args.Term > rf.currentTerm {
+		rf.becomeFollower(args.Term)
+	}
+
+	reply.Term = args.Term
+	if rf.votedFor == -1 || rf.votedFor == args.CandidateId {
+		rf.votedFor = args.CandidateId
+		reply.VoteGranted = true
+	} else {
+		reply.VoteGranted = false
+	}
+}
+
+// thread-safe
+func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+
+	if args.Term < rf.currentTerm {
+		reply.Term = rf.currentTerm
+		reply.Success = false
+		return
+	}
+
+	rf.becomeFollower(args.Term)
+
+	reply.Term = rf.currentTerm
+	reply.Success = true
+
 }
 
 // example code to send a RequestVote RPC to a server.
@@ -173,6 +271,10 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 	return ok
 }
 
+func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *AppendEntriesReply) bool {
+	ok := rf.peers[server].Call("Raft.AppendEntries", args, reply)
+	return ok
+}
 
 // the service using Raft (e.g. a k/v server) wants to start
 // agreement on the next command to be appended to Raft's log. if this
@@ -192,7 +294,6 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	isLeader := true
 
 	// Your code here (3B).
-
 
 	return index, term, isLeader
 }
@@ -216,17 +317,86 @@ func (rf *Raft) killed() bool {
 	return z == 1
 }
 
+// thread-safe
+func (rf *Raft) receiveVoteReply(reply *RequestVoteReply) {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+
+	log.Printf("recv vote %v for %v", reply, rf.me)
+	if reply.Term > rf.currentTerm {
+		rf.becomeFollower(reply.Term)
+		return
+	}
+
+	if reply.Term < rf.currentTerm {
+		return
+	}
+
+	switch rf.serverState {
+	case Leader, Follower:
+		// do nothing
+	case Candidate:
+		if reply.VoteGranted && reply.Term == rf.currentTerm {
+			rf.votesReceived++
+			if rf.votesReceived > len(rf.peers)/2 {
+				rf.becomeLeader()
+			}
+		}
+	}
+}
+
+// thread-safe
+func (rf *Raft) electionTimerExpiredImpl() {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	switch rf.serverState {
+	case Follower, Candidate:
+		rf.becomeCandidate()
+	case Leader:
+		log.Printf("%v(leader) triggered by election timer\n", rf.me)
+		rf.electionTimer.Stop()
+	}
+}
+
+// not thread-safe
+func (rf *Raft) heartbeatTimerExpiredImpl() {
+	switch rf.serverState {
+	case Follower, Candidate:
+		log.Printf("%v(candidate or follower) triggered by heartbeat timer\n", rf.me)
+		rf.heartbeatTimer.Stop()
+	case Leader:
+		for i := range rf.peers {
+			if i == rf.me {
+				continue
+			}
+			go func(term, leader, to int) {
+				args := AppendEntriesArgs{Term: term, LeaderId: leader}
+				reply := AppendEntriesReply{}
+				ok := rf.sendAppendEntries(to, &args, &reply)
+				if !ok {
+					log.Printf("connection failed %v<->%v", leader, to)
+				}
+				rf.mu.Lock()
+				if ok && reply.Term > rf.currentTerm {
+					rf.becomeFollower(reply.Term)
+				}
+				rf.mu.Unlock()
+			}(rf.currentTerm, rf.me, i)
+		}
+		rf.heartbeatTimer.Reset(RandomizedHeartbeatTime())
+	}
+}
+
 func (rf *Raft) ticker() {
-	for rf.killed() == false {
-
-		// Your code here (3A)
-		// Check if a leader election should be started.
-
-
-		// pause for a random amount of time between 50 and 350
-		// milliseconds.
-		ms := 50 + (rand.Int63() % 300)
-		time.Sleep(time.Duration(ms) * time.Millisecond)
+	for !rf.killed() {
+		select {
+		case <-rf.electionTimer.C:
+			rf.electionTimerExpiredImpl()
+		case <-rf.heartbeatTimer.C:
+			rf.mu.Lock()
+			rf.heartbeatTimerExpiredImpl()
+			rf.mu.Unlock()
+		}
 	}
 }
 
@@ -247,13 +417,16 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.me = me
 
 	// Your initialization code here (3A, 3B, 3C).
+	rf.mu = sync.Mutex{}
+	rf.electionTimer = time.NewTimer(100 * time.Second)  // sleep by default
+	rf.heartbeatTimer = time.NewTimer(100 * time.Second) // sleep by default
+	rf.becomeFollower(0)
 
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
 
 	// start ticker goroutine to start elections
 	go rf.ticker()
-
 
 	return rf
 }
