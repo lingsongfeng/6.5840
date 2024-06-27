@@ -24,6 +24,17 @@ func RandomizedElectionTime() time.Duration {
 
 func RandomizedHeartbeatTime() time.Duration {
 	// TODO: proper duration with randomization
-	ms := 300
+	ms := 200
 	return time.Duration(ms) * time.Millisecond
+}
+
+func SortIntDesc(arr []int) {
+	n := len(arr)
+	for i := 1; i < n; i++ {
+		for j := 0; j < i; j++ {
+			if arr[i] > arr[j] {
+				arr[i], arr[j] = arr[j], arr[i]
+			}
+		}
+	}
 }

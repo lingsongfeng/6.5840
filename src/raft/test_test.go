@@ -8,12 +8,14 @@ package raft
 // test with the original before submitting.
 //
 
-import "testing"
-import "fmt"
-import "time"
-import "math/rand"
-import "sync/atomic"
-import "sync"
+import (
+	"fmt"
+	"math/rand"
+	"sync"
+	"sync/atomic"
+	"testing"
+	"time"
+)
 
 // The tester generously allows solutions to complete elections in one second
 // (much more than the paper's range of timeouts).
@@ -278,6 +280,7 @@ func TestFailAgree3B(t *testing.T) {
 	// disconnect one follower from the network.
 	leader := cfg.checkOneLeader()
 	cfg.disconnect((leader + 1) % servers)
+	fmt.Printf("disconn %v\n", (leader+1)%servers)
 
 	// the leader and remaining follower should be
 	// able to agree despite the disconnected follower.
@@ -289,6 +292,7 @@ func TestFailAgree3B(t *testing.T) {
 
 	// re-connect
 	cfg.connect((leader + 1) % servers)
+	fmt.Printf("conn %v\n", (leader+1)%servers)
 
 	// the full set of servers should preserve
 	// previous agreements, and be able to agree
