@@ -17,14 +17,14 @@ func DPrintf(format string, a ...interface{}) {
 
 func RandomizedElectionTime() time.Duration {
 	// TODO: proper duration with randomization
-	ms := 700 + rand.Int63()%400
+	ms := 200 + rand.Int63()%200
 
 	return time.Duration(ms) * time.Millisecond
 }
 
 func RandomizedHeartbeatTime() time.Duration {
 	// TODO: proper duration with randomization
-	ms := 200
+	ms := 50
 	return time.Duration(ms) * time.Millisecond
 }
 

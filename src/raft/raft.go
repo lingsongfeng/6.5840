@@ -175,7 +175,7 @@ func (rf *Raft) becomeCandidate() {
 			if rf.sendRequestVote(sendTo, &request, &reply) {
 				rf.OnReceiveVoteReply(&reply)
 			} else {
-				log.Printf("connection failed %v<->%v", voteFor, sendTo)
+				//log.Printf("connection failed %v<->%v", voteFor, sendTo)
 			}
 		}(rf.currentTerm, rf.me, i, lastLog.Index, lastLog.Term)
 	}
@@ -184,7 +184,7 @@ func (rf *Raft) becomeCandidate() {
 	rf.electionTimer.Reset(t)
 	rf.heartbeatTimer.Stop()
 
-	log.Printf("candidate=%v term=%v %v\n", rf.me, rf.currentTerm, t)
+	// log.Printf("candidate=%v term=%v %v\n", rf.me, rf.currentTerm, t)
 }
 
 // not thread-safe
@@ -205,7 +205,7 @@ func (rf *Raft) becomeLeader() {
 	rf.heartbeatTimer.Reset(RandomizedHeartbeatTime())
 	rf.electionTimer.Stop()
 
-	log.Printf("leader=%v term=%v votes=%v\n", rf.me, rf.currentTerm, rf.votesReceived)
+	//log.Printf("leader=%v term=%v votes=%v\n", rf.me, rf.currentTerm, rf.votesReceived)
 }
 
 // example RequestVote RPC handler.
@@ -244,10 +244,9 @@ func (rf *Raft) GetLastLog() Entry {
 }
 
 func (rf *Raft) PrintState() {
-	return
-	fmt.Printf("[%v] commit:%v log:%v \n", rf.me, rf.commitIndex, rf.log)
+	//fmt.Printf("[%v] commit:%v log:%v \n", rf.me, rf.commitIndex, rf.log)
 	if rf.serverState == Leader {
-		fmt.Printf("[%v] match:%v next:%v\n", rf.me, rf.matchIndex, rf.nextIndex)
+		//fmt.Printf("[%v:%v] match:%v next:%v\n", rf.me, rf.currentTerm, rf.matchIndex, rf.nextIndex)
 	}
 }
 
@@ -326,6 +325,24 @@ func (rf *Raft) reportCommit(prevIdx int) {
 				}
 			}(rf.log[i].Command, i)*/
 	}
+
+}
+
+func (rf *Raft) printInner() {
+	s := ""
+	for _, entry := range rf.log {
+		s += fmt.Sprintf("{%v %v} ", entry.Index, entry.Term)
+	}
+	state := ""
+	switch rf.serverState {
+	case Leader:
+		state = "ld"
+	case Candidate:
+		state = "cd"
+	case Follower:
+		state = "fo"
+	}
+	go log.Printf("[%v:%s] commit:%v log:%v", rf.me, state, rf.commitIndex, s)
 }
 
 // thread safe
@@ -339,14 +356,18 @@ func (rf *Raft) OnReceiveAppendEntriesReply(server int, reply *AppendEntriesRepl
 	}
 	switch rf.serverState {
 	case Follower, Candidate:
-		log.Println("[warning] follower or leader received AE reply")
+		// log.Println("[warning] follower or leader received AE reply")
 	case Leader:
 		if reply.Success {
 			rf.matchIndex[server] = lastIdx
 			rf.nextIndex[server] = lastIdx + 1
 			rf.IncreaseCommitIndexForLeader()
 		} else {
-			rf.nextIndex[server]--
+			// TODO: 到底减去多少，还需要fine-tuning
+			rf.nextIndex[server] -= 5
+			if rf.nextIndex[server] < 1 {
+				rf.nextIndex[server] = 1
+			}
 			rf.BuildAppendEntriesRequestAndSend(server)
 		}
 	}
@@ -358,7 +379,7 @@ func (rf *Raft) BuildAppendEntriesRequestForFollower(server int) AppendEntriesAr
 	prev_idx := rf.nextIndex[server] - 1
 	k := rf.FindEntryByIndex(prev_idx)
 	if k == -1 {
-		panic("k == -1")
+		panic(fmt.Sprintf("[%v] index=%v not found", rf.me, prev_idx))
 	}
 	entries := []Entry{}
 	for i := rf.nextIndex[server]; i < len(rf.log); i++ {
@@ -490,7 +511,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 }
 
 func (rf *Raft) AppendNewLog(command interface{}) {
-	fmt.Printf("appending...\n")
+	//fmt.Printf("appending...\n")
 	lastIdx := rf.log[len(rf.log)-1].Index
 	term := rf.currentTerm
 	rf.matchIndex[rf.me] = lastIdx + 1
