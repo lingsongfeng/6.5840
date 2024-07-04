@@ -20,13 +20,14 @@ package raft
 import (
 	//	"bytes"
 
+	"bytes"
 	"fmt"
 	"log"
 	"sync"
 	"sync/atomic"
 	"time"
 
-	//	"6.5840/labgob"
+	"6.5840/labgob"
 	"6.5840/labrpc"
 )
 
@@ -112,6 +113,17 @@ func (rf *Raft) persist() {
 	// e.Encode(rf.yyy)
 	// raftstate := w.Bytes()
 	// rf.persister.Save(raftstate, nil)
+	CurrentTerm := rf.currentTerm
+	VotedFor := rf.votedFor
+	Logs := rf.log
+	w := new(bytes.Buffer)
+	e := labgob.NewEncoder(w)
+	e.Encode(CurrentTerm)
+	e.Encode(VotedFor)
+	e.Encode(Logs)
+	// fmt.Printf("[%v] write: %v %v %v\n", rf.me, CurrentTerm, VotedFor, Logs)
+	raftstate := w.Bytes()
+	rf.persister.Save(raftstate, nil)
 }
 
 // restore previously persisted state.
@@ -132,6 +144,19 @@ func (rf *Raft) readPersist(data []byte) {
 	//   rf.xxx = xxx
 	//   rf.yyy = yyy
 	// }
+	r := bytes.NewBuffer(data)
+	d := labgob.NewDecoder(r)
+	var CurrentTerm int
+	var VotedFor int
+	var Logs []Entry
+	if d.Decode(&CurrentTerm) != nil || d.Decode(&VotedFor) != nil || d.Decode(&Logs) != nil {
+		log.Printf("[warning] deser failed\n")
+	} else {
+		rf.currentTerm = CurrentTerm
+		rf.votedFor = VotedFor
+		rf.log = Logs
+		// fmt.Printf("[%v] read: %v %v %v\n", rf.me, CurrentTerm, VotedFor, Logs)
+	}
 }
 
 // the service says it has created a snapshot that has
@@ -145,10 +170,13 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 
 // not thread-safe
 func (rf *Raft) becomeFollower(newTerm int) {
-	rf.currentTerm = newTerm
-	rf.serverState = Follower
-	rf.votedFor = -1
-	rf.votesReceived = 0
+	if newTerm > rf.currentTerm {
+		rf.currentTerm = newTerm // TODO: persist
+		rf.serverState = Follower
+		rf.votedFor = -1 // TODO: persist
+		rf.votesReceived = 0
+		rf.persist()
+	}
 
 	t := RandomizedElectionTime()
 	rf.electionTimer.Reset(t)
@@ -160,9 +188,10 @@ func (rf *Raft) becomeFollower(newTerm int) {
 // not thread-safe
 func (rf *Raft) becomeCandidate() {
 	rf.serverState = Candidate
-	rf.currentTerm++
-	rf.votedFor = rf.me
+	rf.currentTerm++     // TODO: persist
+	rf.votedFor = rf.me  // TODO: persist
 	rf.votesReceived = 1 // vote for itself
+	rf.persist()
 	lastLog := rf.GetLastLog()
 	for i := range rf.peers {
 		if i == rf.me {
@@ -231,7 +260,8 @@ func (rf *Raft) OnReceiveRequestVote(args *RequestVoteArgs, reply *RequestVoteRe
 	if (rf.votedFor == -1 || rf.votedFor == args.CandidateId) && (args.LastLogTerm > lastLog.Term || args.LastLogTerm == lastLog.Term && args.LastLogIndex >= lastLog.Index) {
 		// log新与旧怎么判断？
 		// 先看term，term相同的话，再看id
-		rf.votedFor = args.CandidateId
+		rf.votedFor = args.CandidateId // TODO: persist
+		rf.persist()
 		reply.VoteGranted = true
 	} else {
 		reply.VoteGranted = false
@@ -284,6 +314,8 @@ func (rf *Raft) OnReceiveAppendEntries(args *AppendEntriesArgs, reply *AppendEnt
 	// overwrite
 	// idx为-1时，就是log为空的特殊情况，这里也是ok的
 	rf.log = append(rf.log[:idx+1], args.Entries...)
+	// TODO: persist
+	rf.persist()
 
 	minInt := func(a, b int) int {
 		if a < b {
@@ -517,6 +549,8 @@ func (rf *Raft) AppendNewLog(command interface{}) {
 	rf.matchIndex[rf.me] = lastIdx + 1
 	rf.nextIndex[rf.me] = lastIdx + 2
 	rf.log = append(rf.log, Entry{Index: lastIdx + 1, Term: term, Command: command})
+	// TODO: persist
+	rf.persist()
 }
 
 // the tester doesn't halt goroutines created by Raft after each test,
@@ -612,9 +646,14 @@ func (rf *Raft) heartbeatTimerExpiredImpl() {
 func (rf *Raft) ticker() {
 	for !rf.killed() {
 		select {
+		// TODO: 看下这里，能不能保证调用*Impl时，一定是处于相应的状态？
 		case <-rf.electionTimer.C:
 			rf.electionTimerExpiredImpl()
 		case <-rf.heartbeatTimer.C:
+			// rf.serverState 这里完全有可能是 Follower 或者 Candidate。
+			// 假设定时器channel在raft是ld时触发，但进入该分支时，rf被锁住了，
+			// 同时还从ld变成了follower 或者 candidate。若此处再获取到mutex，
+			// rf就的确不是ld了
 			rf.mu.Lock()
 			rf.heartbeatTimerExpiredImpl()
 			rf.mu.Unlock()
@@ -643,15 +682,17 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.applyCh = applyCh
 
 	rf.log = make([]Entry, 1)
+	rf.currentTerm = -1 // not initialized
 	rf.commitIndex = 0
 
 	rf.mu = sync.Mutex{}
 	rf.electionTimer = time.NewTimer(100 * time.Second)  // sleep by default
 	rf.heartbeatTimer = time.NewTimer(100 * time.Second) // sleep by default
-	rf.becomeFollower(0)
 
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
+
+	rf.becomeFollower(0) // must be after readPersist
 
 	// start ticker goroutine to start elections
 	go rf.ticker()
