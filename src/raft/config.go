@@ -141,6 +141,16 @@ func (cfg *config) crash1(i int) {
 	}
 }
 
+func (cfg *config) printAllRaft() {
+	for i := range cfg.rafts {
+		if cfg.rafts[i] != nil {
+			cfg.rafts[i].mu.Lock()
+			cfg.rafts[i].printInner()
+			cfg.rafts[i].mu.Unlock()
+		}
+	}
+}
+
 func (cfg *config) checkLogs(i int, m ApplyMsg) (string, bool) {
 	err_msg := ""
 	v := m.Command
@@ -150,6 +160,7 @@ func (cfg *config) checkLogs(i int, m ApplyMsg) (string, bool) {
 			// some server has already committed a different value for this entry!
 			err_msg = fmt.Sprintf("commit index=%v server=%v %v != server=%v %v",
 				m.CommandIndex, i, m.Command, j, old)
+			cfg.printAllRaft()
 		}
 	}
 	_, prevok := cfg.logs[i][m.CommandIndex-1]
