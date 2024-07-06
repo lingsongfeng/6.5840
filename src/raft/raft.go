@@ -454,6 +454,22 @@ func (rf *Raft) OnReceiveInstallSnapshot(args *InstallSnapshotArgs, reply *Insta
 	}
 }
 
+func (rf *Raft) PrintInnerForTester() {
+	s := ""
+	for _, entry := range rf.log {
+		s += fmt.Sprintf("{%v %v %v} ", entry.Index, entry.Term, entry.Command)
+	}
+	state := ""
+	switch rf.serverState {
+	case Leader:
+		state = "ld"
+	case Candidate:
+		state = "cd"
+	case Follower:
+		state = "fo"
+	}
+	fmt.Printf("[%v:%s:(%v)] commit:%v log:%v\n", rf.me, state, rf.currentTerm, rf.commitIndex, s)
+}
 func (rf *Raft) printInner() {
 	s := ""
 	for _, entry := range rf.log {
@@ -725,6 +741,8 @@ func (rf *Raft) AppendNewLog(command interface{}) {
 func (rf *Raft) Kill() {
 	atomic.StoreInt32(&rf.dead, 1)
 	// Your code here, if desired.
+	rf.electionTimer.Stop()
+	rf.heartbeatTimer.Stop()
 }
 
 func (rf *Raft) killed() bool {

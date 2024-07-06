@@ -612,7 +612,7 @@ func (cfg *config) one(cmd interface{}, expectedServers int, retry bool) int {
 			if retry == false {
 				for i := range cfg.rafts {
 					cfg.rafts[i].mu.Lock()
-					cfg.rafts[i].printInner()
+					cfg.rafts[i].PrintInnerForTester()
 					cfg.rafts[i].mu.Unlock()
 				}
 				cfg.t.Fatalf("one(%v) failed to reach agreement", cmd)
@@ -624,7 +624,7 @@ func (cfg *config) one(cmd interface{}, expectedServers int, retry bool) int {
 	if cfg.checkFinished() == false {
 		for i := range cfg.rafts {
 			cfg.rafts[i].mu.Lock()
-			cfg.rafts[i].printInner()
+			cfg.rafts[i].PrintInnerForTester()
 			cfg.rafts[i].mu.Unlock()
 		}
 		cfg.t.Fatalf("one(%v) failed to reach agreement", cmd)
