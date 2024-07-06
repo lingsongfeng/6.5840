@@ -18,12 +18,6 @@ type RequestVoteReply struct {
 	VoteGranted bool
 }
 
-type Entry struct {
-	Term    int
-	Index   int // 第一个entry的index是 1，此时commitIndex是 0
-	Command interface{}
-}
-
 type AppendEntriesArgs struct {
 	Term     int
 	LeaderId int
