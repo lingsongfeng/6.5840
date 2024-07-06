@@ -571,7 +571,7 @@ func (cfg *config) one(cmd interface{}, expectedServers int, retry bool) int {
 	t0 := time.Now()
 	starts := 0
 	// 10s 内，如果log没commit，就算是挂掉了？好像有点苛刻，先改成20s
-	for time.Since(t0).Seconds() < 10 && cfg.checkFinished() == false {
+	for time.Since(t0).Seconds() < 20 && cfg.checkFinished() == false {
 		// try all the servers, maybe one is the leader.
 		if time.Since(t0).Seconds() >= 10 {
 			log.Printf("[warning] 10 sec passed\n")

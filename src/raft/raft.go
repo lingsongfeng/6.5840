@@ -758,23 +758,22 @@ func (rf *Raft) OnReceiveVoteReply(reply *RequestVoteReply) {
 	defer rf.mu.Unlock()
 
 	DPrintf("recv vote %v for %v", reply, rf.me)
+
 	if reply.Term > rf.currentTerm {
 		rf.becomeFollower(reply.Term)
+	} else if reply.Term < rf.currentTerm {
+		// 收到的投票不是当前term的，直接丢弃
 		return
-	}
-
-	if reply.Term < rf.currentTerm {
-		return
-	}
-
-	switch rf.serverState {
-	case Leader, Follower:
-		// do nothing
-	case Candidate:
-		if reply.VoteGranted && reply.Term == rf.currentTerm {
-			rf.votesReceived++
-			if rf.votesReceived > len(rf.peers)/2 {
-				rf.becomeLeader()
+	} else {
+		switch rf.serverState {
+		case Leader, Follower:
+			// do nothing
+		case Candidate:
+			if reply.VoteGranted && reply.Term == rf.currentTerm {
+				rf.votesReceived++
+				if rf.votesReceived > len(rf.peers)/2 {
+					rf.becomeLeader()
+				}
 			}
 		}
 	}
