@@ -186,11 +186,13 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 
 // not thread-safe
 func (rf *Raft) becomeFollower(newTerm int) {
+	rf.serverState = Follower
 	if newTerm > rf.currentTerm {
 		rf.currentTerm = newTerm // TODO: persist
-		rf.serverState = Follower
-		rf.votedFor = -1 // TODO: persist
-		rf.votesReceived = 0
+		rf.votedFor = -1         // TODO: persist
+		// 这里就算是更新了term与votedFor但恰好卡在这里崩溃没有持久化也是ok的，
+		// 持久化的主要意义在于，确定这个term下的选举投票情况。恰逢follower更新
+		// term时挂了，节点重启时重新走流程就好，因为选票还没有给任何其他节点
 		rf.persist()
 	}
 
