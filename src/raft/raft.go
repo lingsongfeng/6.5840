@@ -170,7 +170,7 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 		return
 	}
 
-	j := rf.FindEntryByIndex(index)
+	j := rf.findEntryPosByIndex(index)
 	if j == -1 {
 		DPrintf("cannot find index\n")
 		return
@@ -202,7 +202,7 @@ func (rf *Raft) becomeFollower(newTerm int) {
 	rf.printInner()
 }
 
-func (rf *Raft) recover() {
+func (rf *Raft) recoverFromPersist() {
 	DPrintf("%v recovered term=%v grant=%v\n", rf.me, rf.currentTerm, rf.votedFor)
 	t := RandomizedElectionTime()
 	rf.electionTimer.Reset(t)
@@ -334,7 +334,7 @@ func (rf *Raft) OnReceiveAppendEntries(args *AppendEntriesArgs, reply *AppendEnt
 	rf.becomeFollower(args.Term)
 
 	// TODO: 如果 rf.log 中有 dummy 数值的话，重新考虑下这里的逻辑
-	idx := rf.FindEntryByIndex(args.PrevLogIndex)
+	idx := rf.findEntryPosByIndex(args.PrevLogIndex)
 
 	if idx == -1 || args.PrevLogTerm != rf.log[idx].Term {
 		reply.Term = rf.currentTerm
@@ -357,7 +357,7 @@ func (rf *Raft) OnReceiveAppendEntries(args *AppendEntriesArgs, reply *AppendEnt
 
 // thread unsafe
 func (rf *Raft) reportCommit(prevIdx int) {
-	start := rf.FindEntryByIndex(prevIdx) + 1
+	start := rf.findEntryPosByIndex(prevIdx) + 1
 	// 如果snapshot覆盖了log，完全可能会出现被覆盖的部分之前
 	// 没有发送过ApplyMsg。这里该如何处理？暂时先只发送拥有的log吧
 	// 注释掉这里的panic
@@ -426,7 +426,7 @@ func (rf *Raft) OnReceiveInstallSnapshot(args *InstallSnapshotArgs, reply *Insta
 		return
 	}
 
-	j := rf.FindEntryByIndex(args.LastIncludedIndex) // 0...j should be discarded
+	j := rf.findEntryPosByIndex(args.LastIncludedIndex) // 0...j should be discarded
 	if j != -1 {
 		tmp := rf.log[j+1:]
 		rf.log = []Entry{{Term: args.LastIncludedTerm, Index: args.LastIncludedIndex}} // dummy log
@@ -532,7 +532,7 @@ func (rf *Raft) OnReceiveAppendEntriesReply(server int, reply *AppendEntriesRepl
 // not thread safe
 func (rf *Raft) BuildAppendEntriesRequestForFollower(server int) AppendEntriesArgs {
 	prev_idx := rf.nextIndex[server] - 1
-	k := rf.FindEntryByIndex(prev_idx)
+	k := rf.findEntryPosByIndex(prev_idx)
 	if k == -1 {
 		panic(fmt.Sprintf("[%v] index=%v not found", rf.me, prev_idx))
 	}
@@ -596,14 +596,15 @@ func (rf *Raft) sendAppendEntriesRequest(req AppendEntriesArgs, to int) {
 }
 
 // not thread safe
-func (rf *Raft) FindEntryByIndex(index int) int {
+func (rf *Raft) findEntryPosByIndex(index int) int {
 	// consider binary search
-	for i := range rf.log {
-		if rf.log[i].Index == index {
-			return i
-		}
+	firstLogIndex := rf.log[0].Index
+	i := index - firstLogIndex
+	if i >= 0 && i < len(rf.log) {
+		return i
+	} else {
+		return -1
 	}
-	return -1
 }
 
 // not thread safe
@@ -617,7 +618,7 @@ func (rf *Raft) IncreaseCommitIndexForLeader() {
 	N := matchIdxCopy[len(matchIdxCopy)/2]
 	prevCommit := rf.commitIndex
 	if N > rf.commitIndex {
-		i := rf.FindEntryByIndex(N)
+		i := rf.findEntryPosByIndex(N)
 		if i != -1 && rf.log[i].Term == rf.currentTerm {
 			rf.commitIndex = N
 		}
@@ -858,7 +859,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 		rf.becomeFollower(0)
 	} else {
 		rf.readPersist(persister.ReadRaftState())
-		rf.recover()
+		rf.recoverFromPersist()
 	}
 	rf.becomeFollower(0) // must be after readPersist
 
