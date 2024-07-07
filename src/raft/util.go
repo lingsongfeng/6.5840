@@ -17,16 +17,18 @@ func DPrintf(format string, a ...interface{}) {
 
 func RandomizedElectionTime() time.Duration {
 	// TODO: proper duration with randomization
-	ms := 200 + rand.Int63()%200
+	ms := 800 + rand.Int63()%200
 
 	return time.Duration(ms) * time.Millisecond
 }
 
 func RandomizedHeartbeatTime() time.Duration {
 	// TODO: proper duration with randomization
-	ms := 50
+	ms := 150
 	return time.Duration(ms) * time.Millisecond
 }
+
+const ExpBackoffFactor = 2
 
 func SortIntDesc(arr []int) {
 	n := len(arr)

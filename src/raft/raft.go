@@ -22,6 +22,7 @@ import (
 
 	"bytes"
 	"fmt"
+	"log"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -74,7 +75,7 @@ type Raft struct {
 
 	serverState ServerState
 
-	votesReceived int
+	recvVoteFrom []bool
 
 	currentTerm int      // 需要持久化
 	votedFor    int      // 需要持久化
@@ -84,10 +85,13 @@ type Raft struct {
 	nextIndex   []int
 	matchIndex  []int
 
+	nextBackoff []int
+
 	reportTaskCh chan func() // 用于保证 ApplyMsg 的顺序，不直接往applyCh里投递消息是因为这玩意会阻塞
 
-	electionTimer  *time.Timer // follower->candidate 以及 candidate->candidate 状态转换的计时器
-	heartbeatTimer *time.Timer // 成为 Leader 后，定期向所有其他 peers 发送心跳请求
+	electionTimer     *time.Timer // follower->candidate 以及 candidate->candidate 状态转换的计时器
+	requestVotesTimer *time.Timer // candidate 在某一任期内，发出多次请求投票的timer
+	heartbeatTimer    *time.Timer // 成为 Leader 后，定期向所有其他 peers 发送心跳请求
 }
 
 // return currentTerm and whether this server
@@ -194,6 +198,7 @@ func (rf *Raft) becomeFollower(newTerm int) {
 	t := RandomizedElectionTime()
 	rf.electionTimer.Reset(t)
 	rf.heartbeatTimer.Stop()
+	rf.requestVotesTimer.Stop()
 
 	DPrintf("follower=%v term=%v %v\n", rf.me, rf.currentTerm, t)
 	rf.printInner()
@@ -204,6 +209,7 @@ func (rf *Raft) recoverFromPersist() {
 	t := RandomizedElectionTime()
 	rf.electionTimer.Reset(t)
 	rf.heartbeatTimer.Stop()
+	rf.requestVotesTimer.Stop()
 }
 
 func (rf *Raft) printLeader() {
@@ -213,26 +219,14 @@ func (rf *Raft) printLeader() {
 // not thread-safe
 func (rf *Raft) becomeCandidate() {
 	rf.serverState = Candidate
-	rf.currentTerm++     // TODO: persist
-	rf.votedFor = rf.me  // TODO: persist
-	rf.votesReceived = 1 // vote for itself
+	rf.currentTerm++    // TODO: persist
+	rf.votedFor = rf.me // TODO: persist
+	rf.recvVoteFrom = make([]bool, len(rf.peers))
+	rf.recvVoteFrom[rf.me] = true // vote for itself
 	DPrintf("%v grants %v in term=%v\n", rf.me, rf.votedFor, rf.currentTerm)
 	rf.persist()
-	for i := range rf.peers {
-		if i == rf.me {
-			continue
-		}
-		go func(term, voteFor, sendTo, lastLogIdx, lastLogTerm int) {
-			// request for votes
-			request := RequestVoteArgs{Term: term, CandidateId: voteFor, LastLogIndex: lastLogIdx, LastLogTerm: lastLogTerm}
-			reply := RequestVoteReply{}
-			if rf.sendRequestVote(sendTo, &request, &reply) {
-				rf.OnReceiveVoteReply(&reply)
-			} else {
-				DPrintf("connection failed %v<->%v", voteFor, sendTo)
-			}
-		}(rf.currentTerm, rf.me, i, rf.logs.GetLastIndex(), rf.logs.GetLastTerm())
-	}
+
+	rf.sendRequestVotes()
 
 	t := RandomizedElectionTime()
 	rf.electionTimer.Reset(t)
@@ -242,25 +236,61 @@ func (rf *Raft) becomeCandidate() {
 	rf.printInner()
 }
 
+func (rf *Raft) sendRequestVotes() {
+	for i := range rf.peers {
+		if i == rf.me {
+			continue
+		}
+		go func(term, voteFor, sendTo, lastLogIdx, lastLogTerm int) {
+			// request for votes
+			request := RequestVoteArgs{Term: term, CandidateId: voteFor, LastLogIndex: lastLogIdx, LastLogTerm: lastLogTerm}
+			reply := RequestVoteReply{}
+			if rf.sendRequestVote(sendTo, &request, &reply) {
+				rf.OnReceiveVoteReply(sendTo, &reply)
+			} else {
+				DPrintf("connection failed %v<->%v", voteFor, sendTo)
+			}
+		}(rf.currentTerm, rf.me, i, rf.logs.GetLastIndex(), rf.logs.GetLastTerm())
+	}
+	rf.requestVotesTimer.Reset(RandomizedElectionTime() / 10)
+}
+
+func (rf *Raft) requestVotesTimerExpiredImpl() {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+
+	switch rf.serverState {
+	case Follower, Leader:
+		rf.requestVotesTimer.Stop()
+	case Candidate:
+		rf.sendRequestVotes()
+	}
+}
+
 // not thread-safe
 func (rf *Raft) becomeLeader() {
 	rf.serverState = Leader
 
 	rf.nextIndex = make([]int, len(rf.peers))
 	rf.matchIndex = make([]int, len(rf.peers))
+	rf.nextBackoff = make([]int, len(rf.peers))
 	for i := range rf.nextIndex {
 		rf.nextIndex[i] = rf.logs.GetLastIndex() + 1
 	}
 	for i := range rf.matchIndex {
 		rf.matchIndex[i] = 0
 	}
+	for i := range rf.nextBackoff {
+		rf.nextBackoff[i] = 1
+	}
 
 	rf.heartbeatTimerExpiredImpl() // immediately notify all other peers
 
 	rf.heartbeatTimer.Reset(RandomizedHeartbeatTime())
 	rf.electionTimer.Stop()
+	rf.requestVotesTimer.Stop()
 
-	DPrintf("leader=%v term=%v votes=%v\n", rf.me, rf.currentTerm, rf.votesReceived)
+	DPrintf("leader=%v term=%v votes=%v\n", rf.me, rf.currentTerm, rf.recvVoteFrom)
 	rf.printInner()
 	rf.printLeader()
 }
@@ -485,13 +515,19 @@ func (rf *Raft) OnReceiveAppendEntriesReply(server int, reply *AppendEntriesRepl
 		if reply.Success {
 			rf.matchIndex[server] = lastIdx
 			rf.nextIndex[server] = lastIdx + 1
+			rf.nextBackoff[server] = 1
 			rf.IncreaseCommitIndexForLeader()
 		} else {
 			// TODO: 到底减去多少，还需要fine-tuning
-			rf.nextIndex[server] -= 1
+			rf.nextIndex[server] -= rf.nextBackoff[server]
+			rf.nextBackoff[server] *= ExpBackoffFactor
 			if rf.nextIndex[server] < rf.logs.GetFirstIndex()+1 {
+				rf.nextBackoff[server] /= ExpBackoffFactor
 				rf.nextIndex[server] = rf.logs.GetFirstIndex() + 1
 				rf.BuildAndSendInstallSnapshotRequest(server)
+			}
+			if rf.nextBackoff[server] > 100 {
+				log.Printf("%v->%v backoff=%v range:[%v,%v]\n", rf.me, server, rf.nextBackoff[server], rf.nextIndex[server], rf.logs.GetLastIndex())
 			}
 			rf.BuildAppendEntriesRequestAndSend(server)
 		}
@@ -678,6 +714,7 @@ func (rf *Raft) Kill() {
 	// Your code here, if desired.
 	rf.electionTimer.Stop()
 	rf.heartbeatTimer.Stop()
+	rf.requestVotesTimer.Stop()
 }
 
 func (rf *Raft) killed() bool {
@@ -685,8 +722,18 @@ func (rf *Raft) killed() bool {
 	return z == 1
 }
 
+func (rf *Raft) countVotes() int {
+	count := 0
+	for i := range rf.recvVoteFrom {
+		if rf.recvVoteFrom[i] {
+			count++
+		}
+	}
+	return count
+}
+
 // thread-safe
-func (rf *Raft) OnReceiveVoteReply(reply *RequestVoteReply) {
+func (rf *Raft) OnReceiveVoteReply(from int, reply *RequestVoteReply) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 
@@ -703,8 +750,8 @@ func (rf *Raft) OnReceiveVoteReply(reply *RequestVoteReply) {
 			// do nothing
 		case Candidate:
 			if reply.VoteGranted && reply.Term == rf.currentTerm {
-				rf.votesReceived++
-				if rf.votesReceived > len(rf.peers)/2 {
+				rf.recvVoteFrom[from] = true
+				if rf.countVotes() > len(rf.peers)/2 {
 					rf.becomeLeader()
 				}
 			}
@@ -767,6 +814,8 @@ func (rf *Raft) ticker() {
 			rf.mu.Lock()
 			rf.heartbeatTimerExpiredImpl()
 			rf.mu.Unlock()
+		case <-rf.requestVotesTimer.C:
+			rf.requestVotesTimerExpiredImpl()
 		}
 	}
 }
@@ -803,8 +852,9 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.commitIndex = 0
 
 	rf.mu = sync.Mutex{}
-	rf.electionTimer = time.NewTimer(100 * time.Second)  // sleep by default
-	rf.heartbeatTimer = time.NewTimer(100 * time.Second) // sleep by default
+	rf.electionTimer = time.NewTimer(100 * time.Second)     // sleep by default
+	rf.heartbeatTimer = time.NewTimer(100 * time.Second)    // sleep by default
+	rf.requestVotesTimer = time.NewTimer(100 * time.Second) // sleep by default
 
 	// initialize from state persisted before a crash
 	if persister.RaftStateSize() == 0 {
