@@ -1,13 +1,20 @@
 package kvsrv
 
-import "6.5840/labrpc"
-import "crypto/rand"
-import "math/big"
+import (
+	"crypto/rand"
+	"math/big"
+	"sync"
+	"time"
 
+	"6.5840/labrpc"
+)
 
 type Clerk struct {
 	server *labrpc.ClientEnd
 	// You will have to modify this struct.
+	uuid int
+	ack  int
+	mu   sync.Mutex
 }
 
 func nrand() int64 {
@@ -21,6 +28,10 @@ func MakeClerk(server *labrpc.ClientEnd) *Clerk {
 	ck := new(Clerk)
 	ck.server = server
 	// You'll have to add code here.
+	ck.uuid = int(nrand())
+	ck.ack = 0
+	ck.mu = sync.Mutex{}
+
 	return ck
 }
 
@@ -35,9 +46,17 @@ func MakeClerk(server *labrpc.ClientEnd) *Clerk {
 // must match the declared types of the RPC handler function's
 // arguments. and reply must be passed as a pointer.
 func (ck *Clerk) Get(key string) string {
-
+	ck.mu.Lock()
+	defer ck.mu.Unlock()
 	// You will have to modify this function.
-	return ""
+	args := GetArgs{Key: key, ClientNo: ck.uuid, Ack: ck.ack}
+	reply := GetReply{}
+	for !ck.server.Call("KVServer.Get", &args, &reply) {
+		time.Sleep(100 * time.Millisecond)
+	}
+	ck.SendHeartbeat(false)
+	ck.ack++
+	return reply.Value
 }
 
 // shared by Put and Append.
@@ -49,8 +68,17 @@ func (ck *Clerk) Get(key string) string {
 // must match the declared types of the RPC handler function's
 // arguments. and reply must be passed as a pointer.
 func (ck *Clerk) PutAppend(key string, value string, op string) string {
+	ck.mu.Lock()
+	defer ck.mu.Unlock()
 	// You will have to modify this function.
-	return ""
+	args := PutAppendArgs{Key: key, Value: value, ClientNo: ck.uuid, Ack: ck.ack}
+	reply := PutAppendReply{}
+
+	for !ck.server.Call("KVServer."+op, &args, &reply) {
+	}
+	ck.SendHeartbeat(false)
+	ck.ack++
+	return reply.Value
 }
 
 func (ck *Clerk) Put(key string, value string) {
@@ -60,4 +88,19 @@ func (ck *Clerk) Put(key string, value string) {
 // Append value to key's value and return that value
 func (ck *Clerk) Append(key string, value string) string {
 	return ck.PutAppend(key, value, "Append")
+}
+
+func (ck *Clerk) SendHeartbeat(lock bool) {
+	if lock {
+		ck.mu.Lock()
+		defer ck.mu.Unlock()
+	}
+
+	args := HeartbeatArgs{ClientNo: ck.uuid, Ack: ck.ack}
+	ck.ack++
+	reply := HeartbeatReply{}
+	for !ck.server.Call("KVServer.Heartbeat", &args, &reply) {
+		break
+		//time.Sleep(100 * time.Millisecond)
+	}
 }
