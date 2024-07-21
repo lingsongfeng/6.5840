@@ -481,7 +481,7 @@ func (rf *Raft) OnReceiveInstallSnapshotReply(reply *InstallSnapshotReply) {
 }
 
 // not thread-safe
-func (rf *Raft) BuildAndSendInstallSnapshotRequest(server int) {
+func (rf *Raft) buildAndSendInstallSnapshotRequest(server int) {
 	args := InstallSnapshotArgs{
 		Term:              rf.currentTerm,
 		LeaderId:          rf.me,
@@ -516,7 +516,7 @@ func (rf *Raft) OnReceiveAppendEntriesReply(server int, reply *AppendEntriesRepl
 			rf.matchIndex[server] = lastIdx
 			rf.nextIndex[server] = lastIdx + 1
 			rf.nextBackoff[server] = 1
-			rf.IncreaseCommitIndexForLeader()
+			rf.increaseCommitIndexForLeader()
 		} else {
 			// TODO: 到底减去多少，还需要fine-tuning
 			rf.nextIndex[server] -= rf.nextBackoff[server]
@@ -524,19 +524,19 @@ func (rf *Raft) OnReceiveAppendEntriesReply(server int, reply *AppendEntriesRepl
 			if rf.nextIndex[server] < rf.logs.GetFirstIndex()+1 {
 				rf.nextBackoff[server] /= ExpBackoffFactor
 				rf.nextIndex[server] = rf.logs.GetFirstIndex() + 1
-				rf.BuildAndSendInstallSnapshotRequest(server)
+				rf.buildAndSendInstallSnapshotRequest(server)
 			}
 			if rf.nextBackoff[server] > 100 {
 				log.Printf("%v->%v backoff=%v range:[%v,%v]\n", rf.me, server, rf.nextBackoff[server], rf.nextIndex[server], rf.logs.GetLastIndex())
 			}
-			rf.BuildAppendEntriesRequestAndSend(server)
+			rf.buildAppendEntriesRequestAndSend(server)
 		}
 	}
 
 }
 
 // not thread safe
-func (rf *Raft) BuildAppendEntriesRequestForFollower(server int) AppendEntriesArgs {
+func (rf *Raft) buildAppendEntriesRequestForFollower(server int) AppendEntriesArgs {
 	prev_idx := rf.nextIndex[server] - 1
 	k := rf.logs.findEntryPosByIndex(prev_idx)
 	if k == -1 {
@@ -566,11 +566,11 @@ func (rf *Raft) buildHeartbeatRequest() AppendEntriesArgs {
 }
 
 // not thread safe
-func (rf *Raft) BuildAppendEntriesRequestAndSend(to int) {
+func (rf *Raft) buildAppendEntriesRequestAndSend(to int) {
 	if to == rf.me {
 		panic("to eq rf.me")
 	}
-	request := rf.BuildAppendEntriesRequestForFollower(to)
+	request := rf.buildAppendEntriesRequestForFollower(to)
 	DPrintf("build AE request:%v\n", request)
 	go func(server int, request *AppendEntriesArgs, last int) {
 		reply := AppendEntriesReply{}
@@ -599,7 +599,7 @@ func (rf *Raft) sendAppendEntriesRequest(req AppendEntriesArgs, to int) {
 }
 
 // not thread safe
-func (rf *Raft) IncreaseCommitIndexForLeader() {
+func (rf *Raft) increaseCommitIndexForLeader() {
 	if rf.serverState != Leader {
 		panic("not leader")
 	}
@@ -681,7 +681,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 		return -1, -1, false
 	}
 
-	rf.AppendNewLog(command)
+	rf.appendNewLog(command)
 
 	// TODO: notify other servers
 
@@ -691,7 +691,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 }
 
 // not thread-safe
-func (rf *Raft) AppendNewLog(command interface{}) {
+func (rf *Raft) appendNewLog(command interface{}) {
 	DPrintf("appending...\n")
 	rf.logs.AppendLog(rf.currentTerm, command)
 	rf.matchIndex[rf.me] = rf.logs.GetLastIndex()
@@ -785,10 +785,10 @@ func (rf *Raft) heartbeatTimerExpiredImpl() {
 			}
 			// TODO: 考虑下这里是>=还是>
 			if rf.nextIndex[i] > rf.logs.GetFirstIndex() {
-				rf.BuildAppendEntriesRequestAndSend(i)
+				rf.buildAppendEntriesRequestAndSend(i)
 			} else {
 				// follower 的log 差的太远了，ld都已经snapshot了，直接发送InstallSnapshot请求
-				rf.BuildAndSendInstallSnapshotRequest(i)
+				rf.buildAndSendInstallSnapshotRequest(i)
 				// 刷新 follower 的 commitIndex
 				req := rf.buildHeartbeatRequest()
 				rf.sendAppendEntriesRequest(req, i)
