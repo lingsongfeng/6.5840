@@ -52,12 +52,16 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 	start := time.Now()
 	kv.checkClientCache(args.ClientNo)
 
-	if v, ok := kv.mp[args.Key]; ok {
-		reply.Value = v
+	if payload, ok := kv.queryFromCache(args.ClientNo, args.Ack); ok {
+		reply.Value = payload.(string)
 	} else {
-		reply.Value = ""
+		if v, ok := kv.mp[args.Key]; ok {
+			reply.Value = v
+		} else {
+			reply.Value = ""
+		}
+		kv.ReleaseAck(args.ClientNo, args.Ack)
 	}
-	kv.ReleaseAck(args.ClientNo, args.Ack)
 
 	DPrintf("get delta t=%v\n", time.Since(start))
 }
