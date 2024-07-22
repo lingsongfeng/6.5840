@@ -24,7 +24,7 @@ func RandomizedElectionTime() time.Duration {
 
 func RandomizedHeartbeatTime() time.Duration {
 	// TODO: proper duration with randomization
-	ms := 150
+	ms := 20
 	return time.Duration(ms) * time.Millisecond
 }
 

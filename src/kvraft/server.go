@@ -1,15 +1,17 @@
 package kvraft
 
 import (
-	"6.5840/labgob"
-	"6.5840/labrpc"
-	"6.5840/raft"
 	"log"
 	"sync"
 	"sync/atomic"
+	"time"
+
+	"6.5840/labgob"
+	"6.5840/labrpc"
+	"6.5840/raft"
 )
 
-const Debug = false
+const Debug = true
 
 func DPrintf(format string, a ...interface{}) (n int, err error) {
 	if Debug {
@@ -17,7 +19,6 @@ func DPrintf(format string, a ...interface{}) (n int, err error) {
 	}
 	return
 }
-
 
 type Op struct {
 	// Your definitions here.
@@ -35,19 +36,145 @@ type KVServer struct {
 	maxraftstate int // snapshot if log grows this big
 
 	// Your definitions here.
+	sm    KvStateMachine
+	chMap map[int]chan string
 }
 
+type Command struct {
+	CommandType string
+	Arg0        string
+	Arg1        string
+	ClerkId     int
+	SeqNo       int
+}
+
+func (kv *KVServer) applier() {
+	for m := range kv.applyCh {
+		DPrintf("[%v] applyCh: %#v\n", kv.me, m)
+		if m.CommandValid {
+			cmd := m.Command.(Command)
+			uuid := m.CommandIndex
+			switch cmd.CommandType {
+			case "Get":
+				rv := kv.sm.Get(cmd.Arg0, cmd.ClerkId, cmd.SeqNo)
+				kv.sendToCh(uuid, rv)
+			case "Put":
+				kv.sm.Put(cmd.Arg0, cmd.Arg1, cmd.ClerkId, cmd.SeqNo)
+				kv.sendToCh(uuid, "")
+			case "Append":
+				kv.sm.Append(cmd.Arg0, cmd.Arg1, cmd.ClerkId, cmd.SeqNo)
+				kv.sendToCh(uuid, "")
+			default:
+				log.Fatal("unknown type")
+			}
+		}
+	}
+}
+
+func (kv *KVServer) sendToCh(uuid int, payload string) {
+	//DPrintf("send locking %v\n", kv.me)
+	kv.mu.Lock()
+	//DPrintf("send locked %v\n", kv.me)
+	if ch, ok := kv.chMap[uuid]; ok {
+		// FIXME: possible blocked here
+		ch <- payload
+	}
+	kv.mu.Unlock()
+	//DPrintf("send unlocked %v\n", kv.me)
+}
+
+func (kv *KVServer) makeAndSetCh(uuid int) <-chan string {
+	ch := make(chan string, 1)
+
+	//DPrintf("make locking %v\n", kv.me)
+	kv.mu.Lock()
+	//DPrintf("make locked %v\n", kv.me)
+	kv.chMap[uuid] = ch
+	kv.mu.Unlock()
+	//DPrintf("make unlocked %v\n", kv.me)
+	return ch
+}
+
+func (kv *KVServer) rmCh(uuid int) {
+	//DPrintf("rm locking %v\n", kv.me)
+	kv.mu.Lock()
+	//DPrintf("rm locked %v\n", kv.me)
+	delete(kv.chMap, uuid)
+	//DPrintf("rm unlocked %v\n", kv.me)
+	kv.mu.Unlock()
+}
 
 func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
-	// Your code here.
+	uuid, _, isLeader := kv.rf.Start(Command{CommandType: "Get", Arg0: args.Key, ClerkId: args.ClerkId, SeqNo: args.SeqNo})
+
+	done := kv.makeAndSetCh(uuid)
+
+	if isLeader {
+		// wait for commitment
+		// possible timeout because of older leader
+		timeout := time.After(1 * time.Second)
+		select {
+		case rv := <-done:
+			reply.Err = OK
+			reply.Value = rv
+			kv.rmCh(uuid)
+		case <-timeout:
+			DPrintf("Get timeout\n")
+			reply.Err = ErrWrongLeader
+			kv.rmCh(uuid)
+		}
+	} else {
+		reply.Err = ErrWrongLeader
+	}
+	DPrintf("[%v] get args:%#v reply:%#v\n", kv.me, args, reply)
 }
 
 func (kv *KVServer) Put(args *PutAppendArgs, reply *PutAppendReply) {
-	// Your code here.
+	uuid, _, isLeader := kv.rf.Start(Command{CommandType: "Put", Arg0: args.Key, Arg1: args.Value, ClerkId: args.ClerkId, SeqNo: args.SeqNo})
+
+	done := kv.makeAndSetCh(uuid)
+
+	if isLeader {
+		// wait for commitment
+		// possible timeout because of older leader
+		timeout := time.After(1 * time.Second)
+		select {
+		case <-done:
+			reply.Err = OK
+			kv.rmCh(uuid)
+		case <-timeout:
+			DPrintf("Put timeout\n")
+			reply.Err = ErrWrongLeader
+			kv.rmCh(uuid)
+		}
+	} else {
+		reply.Err = ErrWrongLeader
+	}
+	DPrintf("[%v] put args:%#v reply:%#v\n", kv.me, args, reply)
 }
 
 func (kv *KVServer) Append(args *PutAppendArgs, reply *PutAppendReply) {
-	// Your code here.
+	uuid, _, isLeader := kv.rf.Start(Command{CommandType: "Append", Arg0: args.Key, Arg1: args.Value, ClerkId: args.ClerkId, SeqNo: args.SeqNo})
+
+	done := kv.makeAndSetCh(uuid)
+
+	if isLeader {
+		// wait for commitment
+		// possible timeout because of older leader
+		timeout := time.After(1 * time.Second)
+		select {
+		case <-done:
+			reply.Err = OK
+			kv.rmCh(uuid)
+		case <-timeout:
+			DPrintf("Append timeout\n")
+			reply.Err = ErrWrongLeader
+			kv.rmCh(uuid)
+		}
+	} else {
+		reply.Err = ErrWrongLeader
+	}
+	DPrintf("[%v] append args:%#v reply:%#v\n", kv.me, args, reply)
 }
 
 // the tester calls Kill() when a KVServer instance won't
@@ -85,6 +212,7 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 	// call labgob.Register on structures you want
 	// Go's RPC library to marshall/unmarshall.
 	labgob.Register(Op{})
+	labgob.Register(Command{})
 
 	kv := new(KVServer)
 	kv.me = me
@@ -96,6 +224,12 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 	kv.rf = raft.Make(servers, me, persister, kv.applyCh)
 
 	// You may need initialization code here.
+	kv.chMap = make(map[int]chan string)
+	kv.sm = NewKvStateMachine()
+
+	go func() {
+		kv.applier()
+	}()
 
 	return kv
 }
