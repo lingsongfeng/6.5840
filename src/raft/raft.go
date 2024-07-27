@@ -379,6 +379,7 @@ func (rf *Raft) reportCommit(prevIdx int) {
 				CommandValid: true,
 				Command:      forReport[i].Command,
 				CommandIndex: forReport[i].Index,
+				CommandTerm:  forReport[i].Term,
 			}
 		}
 	}

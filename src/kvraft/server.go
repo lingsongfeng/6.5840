@@ -1,6 +1,7 @@
 package kvraft
 
 import (
+	"fmt"
 	"log"
 	"sync"
 	"sync/atomic"
@@ -11,7 +12,7 @@ import (
 	"6.5840/raft"
 )
 
-const Debug = true
+const Debug = false
 
 func DPrintf(format string, a ...interface{}) (n int, err error) {
 	if Debug {
@@ -37,7 +38,7 @@ type KVServer struct {
 
 	// Your definitions here.
 	sm    KvStateMachine
-	chMap map[int]chan string
+	chMap map[string]chan string
 }
 
 type Command struct {
@@ -53,7 +54,7 @@ func (kv *KVServer) applier() {
 		DPrintf("[%v] applyCh: %#v\n", kv.me, m)
 		if m.CommandValid {
 			cmd := m.Command.(Command)
-			uuid := m.CommandIndex
+			uuid := makeUuid(m.CommandIndex, m.CommandTerm)
 			switch cmd.CommandType {
 			case "Get":
 				rv := kv.sm.Get(cmd.Arg0, cmd.ClerkId, cmd.SeqNo)
@@ -71,45 +72,41 @@ func (kv *KVServer) applier() {
 	}
 }
 
-func (kv *KVServer) sendToCh(uuid int, payload string) {
-	//DPrintf("send locking %v\n", kv.me)
+func (kv *KVServer) sendToCh(uuid string, payload string) {
 	kv.mu.Lock()
-	//DPrintf("send locked %v\n", kv.me)
 	if ch, ok := kv.chMap[uuid]; ok {
 		// FIXME: possible blocked here
 		ch <- payload
 	}
 	kv.mu.Unlock()
-	//DPrintf("send unlocked %v\n", kv.me)
 }
 
-func (kv *KVServer) makeAndSetCh(uuid int) <-chan string {
+func (kv *KVServer) makeAndSetCh(uuid string) <-chan string {
 	ch := make(chan string, 1)
 
-	//DPrintf("make locking %v\n", kv.me)
 	kv.mu.Lock()
-	//DPrintf("make locked %v\n", kv.me)
 	kv.chMap[uuid] = ch
 	kv.mu.Unlock()
-	//DPrintf("make unlocked %v\n", kv.me)
 	return ch
 }
 
-func (kv *KVServer) rmCh(uuid int) {
-	//DPrintf("rm locking %v\n", kv.me)
+func (kv *KVServer) rmCh(uuid string) {
 	kv.mu.Lock()
-	//DPrintf("rm locked %v\n", kv.me)
 	delete(kv.chMap, uuid)
-	//DPrintf("rm unlocked %v\n", kv.me)
 	kv.mu.Unlock()
 }
 
-func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
-	uuid, _, isLeader := kv.rf.Start(Command{CommandType: "Get", Arg0: args.Key, ClerkId: args.ClerkId, SeqNo: args.SeqNo})
+func makeUuid(index, term int) string {
+	rv := fmt.Sprintf("%v/%v", term, index)
+	return rv
+}
 
-	done := kv.makeAndSetCh(uuid)
+func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
+	index, term, isLeader := kv.rf.Start(Command{CommandType: "Get", Arg0: args.Key, ClerkId: args.ClerkId, SeqNo: args.SeqNo})
 
 	if isLeader {
+		uuid := makeUuid(index, term)
+		done := kv.makeAndSetCh(uuid)
 		// wait for commitment
 		// possible timeout because of older leader
 		timeout := time.After(1 * time.Second)
@@ -130,11 +127,11 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 }
 
 func (kv *KVServer) Put(args *PutAppendArgs, reply *PutAppendReply) {
-	uuid, _, isLeader := kv.rf.Start(Command{CommandType: "Put", Arg0: args.Key, Arg1: args.Value, ClerkId: args.ClerkId, SeqNo: args.SeqNo})
-
-	done := kv.makeAndSetCh(uuid)
-
+	index, term, isLeader := kv.rf.Start(Command{CommandType: "Put", Arg0: args.Key, Arg1: args.Value, ClerkId: args.ClerkId, SeqNo: args.SeqNo})
 	if isLeader {
+		uuid := makeUuid(index, term)
+		done := kv.makeAndSetCh(uuid)
+
 		// wait for commitment
 		// possible timeout because of older leader
 		timeout := time.After(1 * time.Second)
@@ -154,11 +151,11 @@ func (kv *KVServer) Put(args *PutAppendArgs, reply *PutAppendReply) {
 }
 
 func (kv *KVServer) Append(args *PutAppendArgs, reply *PutAppendReply) {
-	uuid, _, isLeader := kv.rf.Start(Command{CommandType: "Append", Arg0: args.Key, Arg1: args.Value, ClerkId: args.ClerkId, SeqNo: args.SeqNo})
-
-	done := kv.makeAndSetCh(uuid)
+	index, term, isLeader := kv.rf.Start(Command{CommandType: "Append", Arg0: args.Key, Arg1: args.Value, ClerkId: args.ClerkId, SeqNo: args.SeqNo})
 
 	if isLeader {
+		uuid := makeUuid(index, term)
+		done := kv.makeAndSetCh(uuid)
 		// wait for commitment
 		// possible timeout because of older leader
 		timeout := time.After(1 * time.Second)
@@ -224,7 +221,7 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 	kv.rf = raft.Make(servers, me, persister, kv.applyCh)
 
 	// You may need initialization code here.
-	kv.chMap = make(map[int]chan string)
+	kv.chMap = make(map[string]chan string)
 	kv.sm = NewKvStateMachine()
 
 	go func() {

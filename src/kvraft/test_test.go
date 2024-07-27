@@ -68,7 +68,6 @@ func Get(cfg *config, ck *Clerk, key string, log *OpLog, cli int) string {
 func Put(cfg *config, ck *Clerk, key string, value string, log *OpLog, cli int) {
 	start := int64(time.Since(t0))
 	ck.Put(key, value)
-	fmt.Printf("put done clerk id=%v v=%v\n", ck.clerkId, value)
 	end := int64(time.Since(t0))
 	cfg.op()
 	if log != nil {
