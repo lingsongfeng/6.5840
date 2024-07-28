@@ -419,6 +419,7 @@ func (rf *Raft) OnReceiveInstallSnapshot(args *InstallSnapshotArgs, reply *Insta
 	// 接受者还傻了吧唧是candidate呢，所以应该直接转成该term的follower
 	rf.becomeFollower(rf.currentTerm) // 这里注意，只有ServerState改变了，term可能没变，处理逻辑可能稍有不同
 
+	// FIXME: 感觉这里有点问题，应该看已压缩的日志是否比InstallSnapshot的请求newer一些，而非commitIndex
 	if args.LastIncludedIndex < rf.commitIndex {
 		// 该follower的commit已经超过
 		reply.Term = rf.currentTerm
