@@ -101,9 +101,19 @@ func makeUuid(index, term int) string {
 	return rv
 }
 
-func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
-	index, term, isLeader := kv.rf.Start(Command{CommandType: "Get", Arg0: args.Key, ClerkId: args.ClerkId, SeqNo: args.SeqNo})
+func (kv *KVServer) commandCommon(op string, args interface{}, reply interface{}) {
+	argsCommon := args.(ArgsCommon)
+	command := Command{CommandType: op, ClerkId: argsCommon.GetClerkId(), SeqNo: argsCommon.GetSeqNo()}
+	switch op {
+	case "Get":
+		command.Arg0 = args.(*GetArgs).Key
+	case "Put", "Append":
+		command.Arg0 = args.(*PutAppendArgs).Key
+		command.Arg1 = args.(*PutAppendArgs).Value
+	}
 
+	index, term, isLeader := kv.rf.Start(command)
+	replyCommon := reply.(ReplyCommon)
 	if isLeader {
 		uuid := makeUuid(index, term)
 		done := kv.makeAndSetCh(uuid)
@@ -112,66 +122,32 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 		timeout := time.After(1 * time.Second)
 		select {
 		case rv := <-done:
-			reply.Err = OK
-			reply.Value = rv
+			replyCommon.SetErr(OK)
+			if op == "Get" {
+				reply.(*GetReply).Value = rv
+			}
 			kv.rmCh(uuid)
 		case <-timeout:
-			DPrintf("Get timeout\n")
-			reply.Err = ErrWrongLeader
+			DPrintf("%v timeout\n", op)
+			replyCommon.SetErr(ErrWrongLeader)
 			kv.rmCh(uuid)
 		}
 	} else {
-		reply.Err = ErrWrongLeader
+		replyCommon.SetErr(ErrWrongLeader)
 	}
-	DPrintf("[%v] get args:%#v reply:%#v\n", kv.me, args, reply)
+	DPrintf("[%v] %v args:%#v reply:%#v\n", kv.me, op, args, reply)
+}
+
+func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
+	kv.commandCommon("Get", args, reply)
 }
 
 func (kv *KVServer) Put(args *PutAppendArgs, reply *PutAppendReply) {
-	index, term, isLeader := kv.rf.Start(Command{CommandType: "Put", Arg0: args.Key, Arg1: args.Value, ClerkId: args.ClerkId, SeqNo: args.SeqNo})
-	if isLeader {
-		uuid := makeUuid(index, term)
-		done := kv.makeAndSetCh(uuid)
-
-		// wait for commitment
-		// possible timeout because of older leader
-		timeout := time.After(1 * time.Second)
-		select {
-		case <-done:
-			reply.Err = OK
-			kv.rmCh(uuid)
-		case <-timeout:
-			DPrintf("Put timeout\n")
-			reply.Err = ErrWrongLeader
-			kv.rmCh(uuid)
-		}
-	} else {
-		reply.Err = ErrWrongLeader
-	}
-	DPrintf("[%v] put args:%#v reply:%#v\n", kv.me, args, reply)
+	kv.commandCommon("Put", args, reply)
 }
 
 func (kv *KVServer) Append(args *PutAppendArgs, reply *PutAppendReply) {
-	index, term, isLeader := kv.rf.Start(Command{CommandType: "Append", Arg0: args.Key, Arg1: args.Value, ClerkId: args.ClerkId, SeqNo: args.SeqNo})
-
-	if isLeader {
-		uuid := makeUuid(index, term)
-		done := kv.makeAndSetCh(uuid)
-		// wait for commitment
-		// possible timeout because of older leader
-		timeout := time.After(1 * time.Second)
-		select {
-		case <-done:
-			reply.Err = OK
-			kv.rmCh(uuid)
-		case <-timeout:
-			DPrintf("Append timeout\n")
-			reply.Err = ErrWrongLeader
-			kv.rmCh(uuid)
-		}
-	} else {
-		reply.Err = ErrWrongLeader
-	}
-	DPrintf("[%v] append args:%#v reply:%#v\n", kv.me, args, reply)
+	kv.commandCommon("Append", args, reply)
 }
 
 // the tester calls Kill() when a KVServer instance won't

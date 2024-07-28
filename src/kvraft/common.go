@@ -19,8 +19,20 @@ type PutAppendArgs struct {
 	SeqNo   int
 }
 
+func (paa *PutAppendArgs) GetClerkId() int {
+	return paa.ClerkId
+}
+
+func (paa *PutAppendArgs) GetSeqNo() int {
+	return paa.SeqNo
+}
+
 type PutAppendReply struct {
 	Err Err
+}
+
+func (par *PutAppendReply) SetErr(e Err) {
+	par.Err = e
 }
 
 type GetArgs struct {
@@ -30,7 +42,28 @@ type GetArgs struct {
 	SeqNo   int
 }
 
+func (ga *GetArgs) GetClerkId() int {
+	return ga.ClerkId
+}
+
+func (ga *GetArgs) GetSeqNo() int {
+	return ga.SeqNo
+}
+
 type GetReply struct {
 	Err   Err
 	Value string
+}
+
+func (gr *GetReply) SetErr(e Err) {
+	gr.Err = e
+}
+
+type ArgsCommon interface {
+	GetClerkId() int
+	GetSeqNo() int
+}
+
+type ReplyCommon interface {
+	SetErr(e Err)
 }
