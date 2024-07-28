@@ -49,6 +49,7 @@ type Command struct {
 	SeqNo       int
 }
 
+// runs on single thread
 func (kv *KVServer) applier() {
 	for m := range kv.applyCh {
 		DPrintf("[%v] applyCh: %#v\n", kv.me, m)
@@ -68,7 +69,21 @@ func (kv *KVServer) applier() {
 			default:
 				log.Fatal("unknown type")
 			}
+			kv.checkStateSizeAndSnapshot(m.CommandIndex)
+		} else if m.SnapshotValid {
+			kv.sm.RecoverFromSnapshot(m.Snapshot)
 		}
+	}
+}
+
+func (kv *KVServer) checkStateSizeAndSnapshot(lastIndex int) {
+	if kv.maxraftstate == -1 {
+		return
+	}
+	threshold := kv.maxraftstate * 7 / 10
+	if kv.rf.GetStateSize() >= threshold {
+		bytes := kv.sm.CreateSnapshot()
+		kv.rf.Snapshot(lastIndex, bytes)
 	}
 }
 
@@ -199,6 +214,7 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 	// You may need initialization code here.
 	kv.chMap = make(map[string]chan string)
 	kv.sm = NewKvStateMachine()
+	kv.sm.RecoverFromSnapshot(persister.ReadSnapshot())
 
 	go func() {
 		kv.applier()

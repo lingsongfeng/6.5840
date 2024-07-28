@@ -1,6 +1,12 @@
 package kvraft
 
-import "sync"
+import (
+	"bytes"
+	"log"
+	"sync"
+
+	"6.5840/labgob"
+)
 
 type KvStateMachine struct {
 	mu    sync.Mutex
@@ -61,4 +67,30 @@ func (sm *KvStateMachine) CheckCommitted(clerkId, seqNo int) bool {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 	return sm.seqNo[clerkId] >= seqNo
+}
+
+// return
+func (sm *KvStateMachine) CreateSnapshot() []byte {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+
+	w := new(bytes.Buffer)
+	e := labgob.NewEncoder(w)
+	e.Encode(sm.kvMap)
+	e.Encode(sm.seqNo)
+	return w.Bytes()
+}
+
+func (sm *KvStateMachine) RecoverFromSnapshot(data []byte) {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+
+	if data == nil || len(data) < 1 {
+		return
+	}
+	r := bytes.NewBuffer(data)
+	d := labgob.NewDecoder(r)
+	if d.Decode(&sm.kvMap) != nil || d.Decode(&sm.seqNo) != nil {
+		log.Fatal("recover failed")
+	}
 }
